@@ -84,7 +84,7 @@ def paint_history():
 
 
 @st.cache_data(show_spinner="Embedding file...")
-def embed_file(original_file):
+def embed_file(original_file, api_key_input):
     os.makedirs("./.cache/files", exist_ok=True)
     file_content = original_file.read()
     file_path = f"./.cache/files/{original_file.name}"
@@ -104,7 +104,7 @@ def embed_file(original_file):
     docs = loader.load_and_split(text_splitter=splitter)
 
     # 임베딩 생성
-    embeddings = OpenAIEmbeddings()
+    embeddings = OpenAIEmbeddings(openai_api_key=api_key_input)
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
         embeddings, cache_dir)
 
@@ -161,7 +161,7 @@ if api_key_input and file:
             st.session_state['current_file'] = file
 
         # 파일 임베딩
-        retriever = embed_file(file)
+        retriever = embed_file(file, api_key_input)
 
         # 준비 완료 메시지 (한 번만 표시)
         if len(st.session_state['messages']) == 0:
