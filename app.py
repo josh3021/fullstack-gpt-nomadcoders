@@ -51,7 +51,6 @@ class ChatCallbackHandler(BaseCallbackHandler):
         self.message_box = None
 
     def on_llm_start(self, *args, **kwargs):
-        # 스트리밍을 위한 빈 박스 생성
         self.message_box = st.empty()
         self.message = ""
 
@@ -86,17 +85,14 @@ def paint_history():
 
 @st.cache_data(show_spinner="Embedding file...")
 def embed_file(original_file):
-    # 파일을 임시 디렉토리에 저장
     os.makedirs("./.cache/files", exist_ok=True)
     file_content = original_file.read()
     file_path = f"./.cache/files/{original_file.name}"
     with open(file_path, "wb") as f:
         f.write(file_content)
 
-    # 캐시 디렉토리 설정
     cache_dir = LocalFileStore(f"./.cache/embeddings/{original_file.name}")
 
-    # 텍스트 분할
     splitter = CharacterTextSplitter.from_tiktoken_encoder(
         separator="\n",
         chunk_size=600,
@@ -136,9 +132,7 @@ st.markdown(
     """
 )
 
-# 사이드바
 with st.sidebar:
-    # API 키 입력
     api_key_input = st.text_input(
         'OpenAI API키를 입력해주세요.',
         type="password",
@@ -150,6 +144,9 @@ with st.sidebar:
         "Upload a .txt .pdf or .docx file",
         type=["pdf", "txt", "docx"],
     )
+
+    st.link_button('Go to Github Repository',
+                   "https://github.com/josh3021/fullstack-gpt-nomadcoders")
 
 # 세션 상태 초기화
 if 'messages' not in st.session_state:
