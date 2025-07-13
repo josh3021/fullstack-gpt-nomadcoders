@@ -1,13 +1,13 @@
 import os
+import re
 
 import streamlit as st
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.chat_models import ChatOpenAI
 from langchain.document_loaders import UnstructuredFileLoader
 from langchain.embeddings import CacheBackedEmbeddings, OpenAIEmbeddings
-from langchain.memory import ConversationBufferMemory
+from langchain.output_parsers import RegexParser
 from langchain.prompts import ChatPromptTemplate
-from langchain.schema import AIMessage, HumanMessage
 from langchain.schema.runnable import RunnablePassthrough
 from langchain.schema.runnable.base import RunnableLambda
 from langchain.storage import LocalFileStore
@@ -15,37 +15,12 @@ from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores.faiss import FAISS
 
 st.set_page_config(
-    page_title="DocumentGPT",
-    page_icon="📃",
+    page_title="DocumentQuiz",
+    page_icon="📚",
 )
 
 
-class Memory:
-    def __init__(self):
-        self.memory = ConversationBufferMemory(return_messages=True)
-
-    def save_memory(self, input_text, output_text):
-        self.memory.save_context(
-            {"input": input_text},
-            {"output": output_text}
-        )
-
-    def load_memory_variables(self):
-        return self.memory.load_memory_variables({})
-
-    def get_chat_history(self):
-        """채팅 히스토리를 문자열로 반환"""
-        memorized_messages = self.memory.chat_memory.messages
-        history = []
-        for memorized_message in memorized_messages:
-            if isinstance(memorized_message, HumanMessage):
-                history.append(f"Human: {memorized_message.content}")
-            elif isinstance(memorized_message, AIMessage):
-                history.append(f"AI: {memorized_message.content}")
-        return "\n".join(history)
-
-
-class ChatCallbackHandler(BaseCallbackHandler):
+class QuizCallbackHandler(BaseCallbackHandler):
     def __init__(self):
         self.message = ''
         self.message_box = None
@@ -60,27 +35,7 @@ class ChatCallbackHandler(BaseCallbackHandler):
             self.message_box.markdown(self.message)
 
     def on_llm_end(self, *args, **kwargs):
-        # 스트리밍이 끝나면 메시지 저장
-        save_message(self.message, 'ai')
-
-
-def send_message(msg_content, role, save=True):
-    with st.chat_message(role):
-        st.markdown(msg_content)
-    if save:
-        save_message(msg_content, role)
-
-
-def save_message(msg_content, role):
-    if 'messages' not in st.session_state:
-        st.session_state['messages'] = []
-    st.session_state['messages'].append({"message": msg_content, "role": role})
-
-
-def paint_history():
-    if 'messages' in st.session_state:
-        for message in st.session_state['messages']:
-            send_message(message['message'], message['role'], False)
+        pass
 
 
 @st.cache_data(show_spinner="Embedding file...")
@@ -112,23 +67,233 @@ def embed_file(original_file, api_key_input):
     vectorstore = FAISS.from_documents(docs, cached_embeddings)
     retriever = vectorstore.as_retriever()
 
-    return retriever
+    return retriever, docs
 
 
 def format_docs(docs):
     return "\n\n".join(document.page_content for document in docs)
 
 
-# 메인 UI
-st.title("DocumentGPT")
+def parse_quiz_response(response_text):
+    """Parse the quiz response using regex patterns"""
+
+    questions = []
+
+    # Split by question markers
+    question_blocks = re.split(r'문제\s*\d+:', response_text)
+
+    for block in question_blocks[1:]:  # Skip first empty split
+        try:
+            # Extract question text
+            question_match = re.search(
+                r'^([^A-D]*?)(?=A\)|선택지)', block.strip(), re.MULTILINE | re.DOTALL)
+            if not question_match:
+                continue
+
+            question = question_match.group(1).strip()
+
+            # Extract options
+            option_a = re.search(r'A\)\s*([^\n]*(?:\n(?!B\))[^\n]*)*)', block)
+            option_b = re.search(r'B\)\s*([^\n]*(?:\n(?!C\))[^\n]*)*)', block)
+            option_c = re.search(r'C\)\s*([^\n]*(?:\n(?!D\))[^\n]*)*)', block)
+            option_d = re.search(
+                r'D\)\s*([^\n]*(?:\n(?!정답|해설)[^\n]*)*)', block)
+
+            # Extract correct answer
+            answer_match = re.search(r'정답[:\s]*([A-D])', block)
+
+            # Extract explanation
+            explanation_match = re.search(
+                r'(?:해설|설명)[:\s]*(.+?)(?=문제\s*\d+:|$)', block, re.DOTALL)
+
+            if all([question, option_a, option_b, option_c, option_d, answer_match]):
+                questions.append({
+                    'question': question,
+                    'option_a': option_a.group(1).strip(),
+                    'option_b': option_b.group(1).strip(),
+                    'option_c': option_c.group(1).strip(),
+                    'option_d': option_d.group(1).strip(),
+                    'correct_answer': answer_match.group(1),
+                    'explanation': explanation_match.group(1).strip() if explanation_match else "설명이 없습니다."
+                })
+        except Exception as e:
+            continue
+
+    return questions
+
+
+@st.cache_data(show_spinner="Generating quiz...")
+def generate_quiz(full_content, api_key_input, difficulty, num_questions, _file_hash):
+    """Generate quiz using structured prompts with caching"""
+
+    # Create LLM
+    llm = ChatOpenAI(
+        api_key=api_key_input,
+        model="gpt-4o-mini",
+        temperature=0.1,
+    )
+
+    # Create the quiz generation prompt
+    difficulty_instructions = {
+        "easy": "기본적인 내용 이해와 사실 확인을 위한 쉬운 문제들을 만드세요.",
+        "medium": "개념 이해와 관계 파악이 필요한 보통 수준의 문제들을 만드세요.",
+        "hard": "비판적 사고와 분석이 필요한 어려운 문제들을 만드세요."
+    }
+
+    # Create example format
+    example_format = """
+문제 1: 여기에 문제를 작성하세요
+A) 첫 번째 선택지
+B) 두 번째 선택지  
+C) 세 번째 선택지
+D) 네 번째 선택지
+정답: A
+해설: 정답에 대한 자세한 설명을 작성하세요.
+
+문제 2: 다음 문제를 작성하세요
+A) 첫 번째 선택지
+B) 두 번째 선택지
+C) 세 번째 선택지  
+D) 네 번째 선택지
+정답: B
+해설: 정답에 대한 자세한 설명을 작성하세요.
+"""
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", f"""
+        당신은 퀴즈 생성기입니다. 주어진 문서 내용을 바탕으로 {num_questions}개의 객관식 문제를 만드세요.
+        
+        난이도: {difficulty}
+        지침: {difficulty_instructions.get(difficulty, difficulty_instructions["medium"])}
+        
+        다음 형식을 정확히 따라서 작성하세요:
+        {example_format}
+        
+        필수 요구사항:
+        1. 모든 문제와 선택지는 한국어로 작성
+        2. 각 문제는 정확히 4개의 선택지 (A, B, C, D)
+        3. "문제 X:" 형식으로 문제 번호 표시
+        4. 선택지는 "A) 내용" 형식으로 작성
+        5. "정답: X" 형식으로 정답 표시
+        6. "해설: 내용" 형식으로 설명 작성
+        7. 각 문제 사이에 빈 줄 추가
+        8. 문서 내용을 정확히 반영한 문제 작성
+        
+        반드시 위의 형식을 정확히 따라주세요.
+        """),
+        ("human", "문서 내용: {content}")
+    ])
+
+    chain = prompt | llm
+
+    try:
+        response = chain.invoke({"content": full_content})
+        questions = parse_quiz_response(response.content)
+
+        if len(questions) == 0:
+            st.error("퀴즈 파싱에 실패했습니다. 다시 시도해주세요.")
+            with st.expander("원본 응답 보기"):
+                st.text(response.content)
+            return None
+
+        return {"questions": questions}
+    except Exception as e:
+        st.error(f"퀴즈 생성 중 오류가 발생했습니다: {str(e)}")
+        return None
+
+
+def display_quiz(quiz_data):
+    """Display the quiz and handle user answers"""
+
+    if 'user_answers' not in st.session_state:
+        st.session_state.user_answers = {}
+
+    questions = quiz_data["questions"]
+
+    st.subheader("📝 퀴즈")
+
+    # Display questions
+    for i, question in enumerate(questions):
+        st.markdown(f"**문제 {i+1}:** {question['question']}")
+
+        # Create options list
+        options = [
+            f"A) {question['option_a']}",
+            f"B) {question['option_b']}",
+            f"C) {question['option_c']}",
+            f"D) {question['option_d']}"
+        ]
+
+        # Radio buttons for options
+        user_answer = st.radio(
+            f"답을 선택하세요 (문제 {i+1})",
+            options,
+            key=f"question_{i}",
+            index=None
+        )
+
+        if user_answer:
+            # Store just the letter (A, B, C, D)
+            st.session_state.user_answers[i] = user_answer[0]
+
+        st.markdown("---")
+
+    # Submit button
+    if st.button("답안 제출", type="primary"):
+        if len(st.session_state.user_answers) == len(questions):
+            show_results(quiz_data)
+        else:
+            st.warning("모든 문제에 답해주세요!")
+
+
+def show_results(quiz_data):
+    """Show quiz results and handle retakes"""
+
+    questions = quiz_data["questions"]
+    correct_count = 0
+
+    st.subheader("📊 결과")
+
+    # Check answers
+    for i, question in enumerate(questions):
+        user_answer = st.session_state.user_answers.get(i)
+        correct_answer = question['correct_answer']
+
+        if user_answer == correct_answer:
+            correct_count += 1
+            st.success(f"✅ 문제 {i+1}: 정답! ({correct_answer})")
+        else:
+            st.error(
+                f"❌ 문제 {i+1}: 오답 (정답: {correct_answer}, 선택: {user_answer})")
+            st.info(f"💡 해설: {question['explanation']}")
+
+    # Show final score
+    score_percentage = (correct_count / len(questions)) * 100
+    st.metric(
+        "점수", f"{correct_count}/{len(questions)} ({score_percentage:.1f}%)")
+
+    # Perfect score celebration
+    if correct_count == len(questions):
+        st.success("🎉 완벽합니다! 모든 문제를 맞췄습니다!")
+        st.balloons()
+    else:
+        st.info(f"💪 {len(questions) - correct_count}개 문제를 더 맞춰보세요!")
+
+        # Retake button
+        if st.button("다시 시도하기", type="secondary"):
+            st.session_state.user_answers = {}
+            st.session_state.quiz_generated = False
+            st.rerun()
+
+
+# Main UI
+st.title("📚 DocumentQuiz")
 
 st.markdown(
     """
-    Welcome!
-                
-    Use this chatbot to ask questions to an AI about your files!
+    업로드한 문서를 바탕으로 퀴즈를 생성하고 풀어보세요!
     
-    Upload your files on the sidebar.
+    사이드바에서 파일을 업로드하고 퀴즈 설정을 조정하세요.
     """
 )
 
@@ -145,77 +310,81 @@ with st.sidebar:
         type=["pdf", "txt", "docx"],
     )
 
+    st.markdown("### 퀴즈 설정")
+
+    # Quiz difficulty
+    difficulty = st.selectbox(
+        "난이도 선택",
+        ["easy", "medium", "hard"],
+        format_func=lambda x: {"easy": "쉬움", "medium": "보통", "hard": "어려움"}[x]
+    )
+
+    # Number of questions
+    num_questions = st.slider(
+        "문제 수",
+        min_value=3,
+        max_value=10,
+        value=5
+    )
+
+    st.markdown("### 난이도 설명")
+    if difficulty == "easy":
+        st.info("📖 속독하면 풀 수 있어요!")
+    elif difficulty == "medium":
+        st.info("🤔 정독해야지 풀 수 있어요!")
+    else:
+        st.info("🧠 여러번 정독해봐야할 거에요!")
+
     st.link_button('Go to Github Repository',
                    "https://github.com/josh3021/fullstack-gpt-nomadcoders")
 
-# 세션 상태 초기화
-if 'messages' not in st.session_state:
-    st.session_state['messages'] = []
-
+# Initialize session state
+if 'quiz_generated' not in st.session_state:
+    st.session_state.quiz_generated = False
+if 'current_quiz' not in st.session_state:
+    st.session_state.current_quiz = None
 
 if api_key_input and file:
     try:
-        # 파일이나 API 키가 변경되면 메시지 초기화
+        # Check if file changed
         if 'current_file' not in st.session_state or st.session_state.get('current_file') != file:
-            st.session_state['messages'] = []
-            st.session_state['current_file'] = file
+            st.session_state.current_file = file
+            st.session_state.quiz_generated = False
+            st.session_state.current_quiz = None
+            if 'user_answers' in st.session_state:
+                del st.session_state.user_answers
 
-        # 파일 임베딩
-        retriever = embed_file(file, api_key_input)
+        # Embed file
+        retriever, docs = embed_file(file, api_key_input)
+        full_content = format_docs(docs)
 
-        # 준비 완료 메시지 (한 번만 표시)
-        if len(st.session_state['messages']) == 0:
-            send_message("파일이 준비되었습니다! 파일에 대해 무엇이든 물어보세요...", "ai", False)
+        st.success("✅ 파일이 성공적으로 업로드되었습니다!")
 
-        # 채팅 기록 표시
-        paint_history()
+        # Generate quiz button
+        if not st.session_state.quiz_generated:
+            if st.button("퀴즈 생성하기", type="primary"):
+                # Create hash for caching
+                file_hash = hash(file.name + str(file.size) +
+                                 difficulty + str(num_questions))
 
-        # 사용자 입력
-        user_input = st.chat_input("파일에 대해 무엇이든 물어보세요...")
+                quiz_data = generate_quiz(
+                    full_content, api_key_input, difficulty, num_questions, file_hash)
+                if quiz_data:
+                    st.session_state.current_quiz = quiz_data
+                    st.session_state.quiz_generated = True
+                    st.rerun()
 
-        if user_input:
-            # 사용자 메시지 저장 및 표시
-            send_message(user_input, 'human')
+        # Display quiz if generated
+        if st.session_state.quiz_generated and st.session_state.current_quiz:
+            display_quiz(st.session_state.current_quiz)
 
-            # 콜백 핸들러 생성 (매번 새로 생성)
-            callback_handler = ChatCallbackHandler()
-
-            # LLM 초기화
-            llm = ChatOpenAI(
-                api_key=api_key_input,
-                model="gpt-4o-mini",
-                temperature=0.1,
-                streaming=True,
-                callbacks=[callback_handler]
-            )
-
-            # 프롬프트 템플릿
-            prompt = ChatPromptTemplate.from_messages([
-                ("system",
-                 """
-                    Answer the question using ONLY the following context.
-                    If you don't know the answer just say you don't know.
-                    Don't make anything up.
-                    And most important thing is ANSWER ONLY IN KOREAN!
-
-                    Context: {context}
-                """),
-                ("human", "{question}")
-            ])
-
-            # 체인 생성
-            chain = (
-                {
-                    "context": retriever | RunnableLambda(format_docs),
-                    "question": RunnablePassthrough()
-                }
-                | prompt
-                | llm
-            )
-
-            # AI 응답 생성 (스트리밍)
-            with st.chat_message('ai'):
-                response = chain.invoke(user_input)
+            # New quiz button
+            if st.button("새 퀴즈 생성", type="secondary"):
+                st.session_state.quiz_generated = False
+                st.session_state.current_quiz = None
+                if 'user_answers' in st.session_state:
+                    del st.session_state.user_answers
+                st.rerun()
 
     except Exception as e:
         st.error(f"오류가 발생했습니다: {str(e)}")
