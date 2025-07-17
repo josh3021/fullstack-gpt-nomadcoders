@@ -1,0 +1,27 @@
+The **XZ backdoor**, also known as **CVE-2024-3094**, is a significant security vulnerability that was introduced into the Linux build of the **XZ Utils** software package, specifically in versions **5.6.0** and **5.6.1**. This backdoor was discovered in early 2024 and is notable for its sophistication and the implications it has for supply chain security in open-source software.
+
+### What is the XZ Backdoor?
+
+The XZ backdoor was inserted by an individual using the pseudonym **Jia Tan**. It allows an attacker who possesses a specific **Ed448 private key** to execute remote code on affected Linux systems via **OpenSSH**. The vulnerability has been assigned a **CVSS score of 10.0**, indicating a critical severity level.
+
+### How Does It Work?
+
+1. **Insertion Method**: The backdoor was introduced after Jia Tan gained a position of trust within the XZ Utils project, which took approximately three years. This involved creating multiple pseudonymous accounts to exert pressure on the project's maintainers and ultimately allowing Tan to sign off on the compromised versions of the software.
+
+2. **Malicious Mechanism**: The backdoor remains dormant unless a specific third-party patch of the SSH server is used. When triggered, it alters the behavior of the OpenSSH SSH server daemon by exploiting the **systemd** library, enabling unauthorized remote access to the system.
+
+3. **Obfuscation**: The malicious code was designed with multiple stages to obfuscate its true purpose, making it harder to detect during routine software testing.
+
+4. **Discovery**: The backdoor was discovered by **Andres Freund**, a Microsoft employee and PostgreSQL developer, who noticed unusual CPU usage and errors in memory debugging tools while investigating performance issues in Debian Sid.
+
+### Impact
+
+- **Widespread Risk**: At the time of discovery, the backdoored versions had not been widely deployed in production systems but were present in development versions of major Linux distributions. This raised concerns about the potential for widespread exploitation if the backdoor had been integrated into production environments.
+
+- **Supply Chain Security Concerns**: The incident highlighted vulnerabilities in the open-source software supply chain, emphasizing the need for better security practices and oversight in the development and maintenance of open-source projects.
+
+- **Advanced Persistent Threat (APT)**: The sophistication of the backdoor and the operational security practiced by the perpetrator led some experts to suggest that it may be linked to advanced persistent threat actors, potentially state-sponsored.
+
+### Conclusion
+
+The XZ backdoor incident serves as a critical reminder of the vulnerabilities inherent in open-source software development and the importance of maintaining rigorous security practices. It underscores the need for vigilance in monitoring software supply chains and ensuring that contributors to open-source projects are trustworthy. The incident has prompted discussions about improving security measures to prevent similar occurrences in the future.
